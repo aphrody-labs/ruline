@@ -80,6 +80,16 @@ pub(crate) fn resolve_motion(
         MotionTarget::Grapheme(Direction::Backward) => {
             span(prev_grapheme_boundary(buf, origin), false)
         }
+        // `rl_forward_byte`/`rl_backward_byte` (text.c:264/394) step
+        // `rl_point` by bytes; a mid-grapheme offset cannot rest here,
+        // so the landing snaps to the grapheme edge — which makes the
+        // byte step resolve to the same edge as the grapheme step in
+        // every case (the honest boundary-safe reading; see the
+        // variant's doc).
+        MotionTarget::Byte(direction) => match direction {
+            Direction::Forward => span(next_grapheme_boundary(buf, origin), false),
+            Direction::Backward => span(prev_grapheme_boundary(buf, origin), false),
+        },
         MotionTarget::Word {
             kind,
             edge,

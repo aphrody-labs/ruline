@@ -331,6 +331,17 @@ impl Editor {
             EditCommand::ReplaceChar(chr) => self.replace_char(*chr),
             EditCommand::ReplaceChars(n_chars, str) => self.replace_chars(*n_chars, str),
             EditCommand::Backspace => self.backspace(),
+            EditCommand::RuboutOrDelete => {
+                // text.c:1331: rubout at end of line, delete at point
+                // anywhere else.
+                if self.insertion_point() == self.line_buffer().len()
+                    && !self.line_buffer().is_empty()
+                {
+                    self.backspace()
+                } else {
+                    self.delete()
+                }
+            }
             EditCommand::BackspacePair { open, close } => self.backspace_pair(*open, *close),
             EditCommand::Delete => self.delete(),
             EditCommand::CutChar => self.cut_char(),

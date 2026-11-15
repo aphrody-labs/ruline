@@ -308,6 +308,16 @@ pub enum MotionTarget {
     /// A byte position, clamped into the buffer — measured from the buffer
     /// start, not a displacement from the cursor.
     Position(usize),
+
+    /// One raw byte step — GNU `rl_forward_byte`/`rl_backward_byte`
+    /// (text.c:264/394), which move `rl_point` by bytes without regard
+    /// to multibyte structure. A byte offset mid-grapheme is not
+    /// representable here, so the resolver snaps to the grapheme edge:
+    /// forward lands at-or-after `origin + 1`, backward at-or-before
+    /// `origin - 1`. On single-byte text this is exact; on multibyte
+    /// text it is the closest boundary-safe reading (whole-grapheme
+    /// travel, GNU's own `rl_*_char` behavior).
+    Byte(Direction),
     /// The position recorded by [`ReedlineEvent::ViSetMark`] under this
     /// mark name — GNU `` ` `` / vi `goto-mark` (vi_mode.c `rl_vi_goto_mark`,
     /// `` '<char> `` in the command map). The vi grammar cannot see the
@@ -356,6 +366,7 @@ impl MotionTarget {
             MotionTarget::MatchingBracket => None,
             MotionTarget::Column(_) => None,
             MotionTarget::ViMark(_) => None,
+            MotionTarget::Byte(direction) => Some(direction),
         }
     }
 }
@@ -578,6 +589,13 @@ pub enum EditCommand {
 
     /// Delete in-place from the current insertion point
     Delete,
+
+    /// GNU `rl_rubout_or_delete` (text.c:1331), the
+    /// `forward-backward-delete-char` funmap name: at end of line it
+    /// rubs out the grapheme behind the point (a backspace), anywhere
+    /// else it deletes the grapheme under the point. The variant
+    /// carries the choice so the editor can check the cursor once.
+    RuboutOrDelete,
 
     /// Cut the grapheme left from the current insertion point
     CutCharLeft,
@@ -1094,6 +1112,7 @@ impl EditCommand {
             // Text edits
             EditCommand::InsertChar(_)
             | EditCommand::Backspace
+            | EditCommand::RuboutOrDelete
             | EditCommand::BackspacePair { .. }
             | EditCommand::Delete
             | EditCommand::CutChar
@@ -1471,6 +1490,24 @@ pub enum ReedlineEvent {
 
     /// Search the history for a string
     SearchHistory,
+
+    /// GNU `rl_forward_search_history` (isearch.c:141): the
+    /// incremental history search, direction forward — `SearchHistory`
+    /// is the reverse-search face (`rl_reverse_search_history`), this
+    /// enters the same machine searching toward newer entries.
+    ForwardSearchHistory,
+
+    /// GNU `rl_skip_csi_sequence` (text.c:639): read and discard
+    /// console input until the CSI final byte arrives — every char in
+    /// `0x20..0x40` is parameter/intermediate, the first char outside
+    /// that range is the terminator and is consumed too.
+    SkipCsiSequence,
+
+    /// GNU `rl_arrow_keys` (text.c:653), the `arrow-key-prefix`
+    /// funmap name: read one character and dispatch the arrow it
+    /// names — `A` up (previous history), `B` down (next history),
+    /// `C` forward byte, `D` backward byte; anything else dings.
+    ArrowKeyPrefix,
 
     /// In vi mode multiple reedline events can be chained while parsing the
     /// command or movement characters
