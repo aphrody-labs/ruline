@@ -5289,6 +5289,14 @@ impl Reedline {
         }
     }
 
+    /// Switch the active edit mode outside a key dispatch — the
+    /// host-channel face of [`ReedlineEvent::SwitchMode`], for GNU
+    /// bodies that end in a mode change (e.g. `rl_vi_start_inserting`
+    /// after `vi-tilde-expand`, vi_mode.c:414).
+    pub fn switch_edit_mode(&mut self, mode: PromptEditMode) {
+        self.change_edit_mode(ReedlineEvent::SwitchMode(mode));
+    }
+
     /// Executes [`EditCommand`] actions by modifying the internal state appropriately. Does not output itself.
     pub fn run_edit_commands(&mut self, commands: &[EditCommand]) {
         self.run_edit_commands_with_status(commands);
