@@ -372,7 +372,11 @@ fn v32_gg_and_g() {
     assert_eq!(d.state().1, 0);
     d.keys("G");
     assert_eq!(d.state().0, "one\ntwo\nthree");
-    assert!(d.state().1 >= 8, "G lands on the last line, got {}", d.state().1);
+    assert!(
+        d.state().1 >= 8,
+        "G lands on the last line, got {}",
+        d.state().1
+    );
 }
 
 #[test]
@@ -684,4 +688,104 @@ fn v63_dot_repeat_replays_plain_insert() {
     d.keys("l");
     d.keys(".");
     assert_eq!(d.state().0, "ZZab");
+}
+
+// ---------------- niubash#731: ViKeys command-grammar injection ----------------
+
+#[test]
+fn q3_injected_dw_from_insert_stays_insert() {
+    // A `vi-*` funmap name bound in the insert keymap feeds its keys
+    // through the command grammar (niubash#731); GNU leaves
+    // `_rl_keymap` on insert, so `dw` deletes and stays inserting.
+    use crate::edit_mode::ViCommandOutcome;
+    let mut d = Driver::new("hello world", 0, ViMode::Insert);
+    assert!(matches!(
+        d.vi.vi_command_char('d'),
+        ViCommandOutcome::Pending
+    ));
+    let ViCommandOutcome::Done { event, .. } = d.vi.vi_command_char('w') else {
+        panic!("`dw` should resolve")
+    };
+    d.apply(event);
+    assert_eq!(d.state(), ("world".into(), 0));
+    assert_eq!(d.mode(), ViMode::Insert);
+}
+
+#[test]
+fn q3_injected_find_consumes_target_char() {
+    // `vi-char-search`: the `f` arrives through ViKeys and the target
+    // char is the next injected char — GNU's function reads it itself,
+    // bypassing keymap dispatch.
+    use crate::edit_mode::ViCommandOutcome;
+    let mut d = Driver::new("hello", 0, ViMode::Normal);
+    assert!(matches!(
+        d.vi.vi_command_char('f'),
+        ViCommandOutcome::Pending
+    ));
+    assert!(d.vi.vi_command_pending());
+    let ViCommandOutcome::Done { event, .. } = d.vi.vi_command_char('l') else {
+        panic!("`f<char>` should resolve")
+    };
+    d.apply(event);
+    assert_eq!(d.state().1, 2, "f l lands on the first 'l'");
+    assert_eq!(d.mode(), ViMode::Normal);
+}
+
+#[test]
+fn q3_injected_append_reports_insert_landing() {
+    // `vi-append-mode`: `a` lands insertion — a standby machine must
+    // activate into vi-insert (GNU's `rl_vi_start_inserting` switches
+    // keymaps whatever map the name was bound in).
+    use crate::edit_mode::ViCommandOutcome;
+    let mut d = Driver::new("ab", 0, ViMode::Normal);
+    let ViCommandOutcome::Done {
+        event,
+        lands_insert,
+    } = d.vi.vi_command_char('a')
+    else {
+        panic!("`a` resolves in one char")
+    };
+    assert!(lands_insert);
+    d.apply(event);
+    d.sync_mode();
+    assert_eq!(d.mode(), ViMode::Insert);
+    assert_eq!(d.state().1, 1, "append steps one right");
+}
+
+#[test]
+fn q3_set_mark_emits_vi_set_mark() {
+    // `vi-set-mark` (`m<char>`) resolves to the mark-table write —
+    // the engine owns marks, the grammar only names the slot.
+    use crate::edit_mode::ViCommandOutcome;
+    let mut d = Driver::new("hello", 2, ViMode::Normal);
+    assert!(matches!(
+        d.vi.vi_command_char('m'),
+        ViCommandOutcome::Pending
+    ));
+    let ViCommandOutcome::Done { event, .. } = d.vi.vi_command_char('a') else {
+        panic!("`m<char>` should resolve")
+    };
+    let has_mark = match &event {
+        ReedlineEvent::ViSetMark('a') => true,
+        ReedlineEvent::Multiple(events) => events
+            .iter()
+            .any(|e| matches!(e, ReedlineEvent::ViSetMark('a'))),
+        _ => false,
+    };
+    assert!(has_mark, "m a must emit ViSetMark('a'), got {event:?}");
+}
+
+#[test]
+fn q3_abort_pending_injection_clears_state() {
+    use crate::edit_mode::ViCommandOutcome;
+    let mut d = Driver::new("hello", 0, ViMode::Normal);
+    assert!(matches!(
+        d.vi.vi_command_char('f'),
+        ViCommandOutcome::Pending
+    ));
+    d.vi.vi_command_abort();
+    assert!(!d.vi.vi_command_pending());
+    // The next ordinary key parses normally, not as the find target.
+    d.keys("x");
+    assert_eq!(d.state().0, "ello");
 }

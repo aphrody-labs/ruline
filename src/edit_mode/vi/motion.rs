@@ -142,6 +142,19 @@ where
             let _ = input.next();
             ParseResult::Valid(Motion::LastLine)
         }
+        // vi `` `<char> `` — GNU `rl_vi_goto_mark` (vi_mode.c): move to
+        // the position `m<char>` recorded. The mark stays symbolic —
+        // `MotionTarget::ViMark` — until the engine resolves it.
+        Some('`') => {
+            let _ = input.next();
+            match input.peek() {
+                Some(&x) => {
+                    input.next();
+                    ParseResult::Valid(Motion::GotoMark(*x))
+                }
+                None => ParseResult::Incomplete,
+            }
+        }
         ch if ch == command_char.as_ref().as_ref() && command_char.is_some() => {
             let _ = input.next();
             ParseResult::Valid(Motion::Line)
@@ -181,6 +194,9 @@ pub enum Motion {
     /// only known at [`ParsedViSequence`](super::parser::ParsedViSequence)
     /// level, so the parser lowers it.
     Column,
+    /// vi `` `<char> `` — resolves to `MotionTarget::ViMark(char)`; the
+    /// engine owns the mark table and lowers it to a position.
+    GotoMark(char),
 }
 
 impl Motion {
@@ -256,6 +272,9 @@ impl Motion {
             Motion::FirstLine => Some(MotionTarget::BufferEdge(Direction::Backward)),
             Motion::LastLine => Some(MotionTarget::BufferEdge(Direction::Forward)),
             Motion::MatchBrackets => Some(MotionTarget::MatchingBracket),
+            // `` `<c> `` — the engine resolves the mark name to a
+            // position when the edit runs; an unset mark dies there.
+            Motion::GotoMark(c) => Some(MotionTarget::ViMark(*c)),
 
             // `j`/`k` — the adjacent line, for the operator path only (see the
             // method docs; the bare-motion arms lower to events instead).
@@ -317,7 +336,8 @@ impl Motion {
             | Motion::FirstLine
             | Motion::LastLine
             | Motion::Start
-            | Motion::End => {
+            | Motion::End
+            | Motion::GotoMark(_) => {
                 // These arms cover exactly the variants `target()` resolves, so
                 // `None` is unreachable; degrade to a no-op rather than panic if
                 // that ever drifts.

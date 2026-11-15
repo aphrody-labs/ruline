@@ -8,7 +8,7 @@ mod keybindings;
 mod sequence;
 mod vi;
 
-pub use base::EditMode;
+pub use base::{EditMode, ViCommandOutcome};
 pub use cursors::CursorConfig;
 pub use emacs::{default_emacs_keybindings, Emacs};
 pub use helix::{
