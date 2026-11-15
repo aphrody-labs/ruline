@@ -433,6 +433,21 @@ pub struct Reedline {
     // search.c:701,737,755).
     history_line_search: Option<HistoryLineSearch>,
 
+    // The direction the live incremental search walks — GNU's
+    // `cxt->direction` (isearch.c): `C-r`/`rl_reverse_search_history`
+    // walks older entries, `C-s`/`rl_forward_search_history` newer.
+    // Kept outside `HistoryCursor` because the *query* retargets on
+    // every needle edit while the direction persists between them.
+    isearch_direction: SearchDirection,
+
+    // GNU `rl_skip_csi_sequence`/`rl_arrow_keys` input reads
+    // (text.c:639/653): a dispatched `SkipCsiSequence`/
+    // `ArrowKeyPrefix` event parks here and the input loop feeds the
+    // next raw key to the consumer instead of the keymap — the same
+    // shape as a standby `ViKeys` read.
+    pending_csi_skip: bool,
+    pending_arrow_prefix: bool,
+
     // Live `RL_STATE_NSEARCH` context — `Some` only in
     // `InputMode::NonIncrementalSearch` (search.c `_rl_nscxt`).
     noninc_search: Option<NonIncrementalSearchState>,
@@ -1177,6 +1192,9 @@ impl Reedline {
             noninc_search_pos: None,
             operate_and_get_next: None,
             history_line_search: None,
+            isearch_direction: SearchDirection::Backward,
+            pending_csi_skip: false,
+            pending_arrow_prefix: false,
             replay_depth: 0,
             break_signal: None,
             repaint_signal: None,
@@ -2731,6 +2749,55 @@ impl Reedline {
                     typein_run = false;
                     continue;
                 }
+                // `rl_skip_csi_sequence` (text.c:639): consume input
+                // chars while they are CSI parameter/intermediate
+                // bytes (0x20–0x3f); the first char outside is the
+                // final byte and is consumed too. A non-Char key ends
+                // the read the same way — GNU's `rl_read_key` has no
+                // CSI awareness either.
+                if self.pending_csi_skip {
+                    let tail = match &event {
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char(c),
+                            ..
+                        }) => (0x20..0x40).contains(&(*c as u32)),
+                        _ => false,
+                    };
+                    if !tail {
+                        self.pending_csi_skip = false;
+                    }
+                    typein_run = false;
+                    continue;
+                }
+                // `rl_arrow_keys` (text.c:653), `arrow-key-prefix`:
+                // the next char names the arrow — A up, B down,
+                // C forward byte, D backward byte; anything else is
+                // GNU's `rl_ding` (consumed, no command).
+                if self.pending_arrow_prefix {
+                    self.pending_arrow_prefix = false;
+                    if let Event::Key(KeyEvent {
+                        code: KeyCode::Char(c),
+                        ..
+                    }) = &event
+                    {
+                        let arrow_event = match c.to_ascii_uppercase() {
+                            'A' => Some(ReedlineEvent::Up),
+                            'B' => Some(ReedlineEvent::Down),
+                            'C' => Some(ReedlineEvent::Edit(vec![EditCommand::Move(
+                                MotionTarget::Byte(Direction::Forward),
+                            )])),
+                            'D' => Some(ReedlineEvent::Edit(vec![EditCommand::Move(
+                                MotionTarget::Byte(Direction::Backward),
+                            )])),
+                            _ => None,
+                        };
+                        if let Some(arrow_event) = arrow_event {
+                            reedline_events.push((arrow_event, self.replay_depth));
+                        }
+                    }
+                    typein_run = false;
+                    continue;
+                }
                 // A *standby* vi machine mid-`ViKeys` read owns the next
                 // key — the active machine intercepts its own inside
                 // `dispatch_key`, but a standby only sees what the
@@ -3300,7 +3367,20 @@ impl Reedline {
                 Ok(EventStatus::Handled)
             }
             ReedlineEvent::PreviousHistory | ReedlineEvent::Up | ReedlineEvent::SearchHistory => {
+                // isearch.c: `rl_reverse_search_history` inside the
+                // search continues — or flips to — backward.
+                self.isearch_direction = SearchDirection::Backward;
                 self.history_cursor.back(self.history.as_ref())?;
+                Ok(EventStatus::Handled)
+            }
+            ReedlineEvent::ForwardSearchHistory => {
+                // isearch.c: `rl_forward_search_history` inside the
+                // search continues — or flips to — forward.
+                self.isearch_direction = SearchDirection::Forward;
+                self.history_cursor.forward(self.history.as_ref())?;
+                if self.history_cursor.string_at_cursor().is_none() {
+                    self.history_cursor.back(self.history.as_ref())?;
+                }
                 Ok(EventStatus::Handled)
             }
             ReedlineEvent::NextHistory | ReedlineEvent::Down => {
@@ -3421,6 +3501,8 @@ impl Reedline {
             | ReedlineEvent::ViKeys(_)
             | ReedlineEvent::ViSetMark(_)
             | ReedlineEvent::FetchHistory { .. }
+            | ReedlineEvent::SkipCsiSequence
+            | ReedlineEvent::ArrowKeyPrefix
             | ReedlineEvent::SwitchMode(_) => Ok(EventStatus::Inapplicable),
         }
     }
@@ -4225,7 +4307,22 @@ impl Reedline {
                 })
             }
             ReedlineEvent::SearchHistory => {
-                self.enter_history_search();
+                self.enter_history_search(SearchDirection::Backward);
+                Ok(EventStatus::Handled)
+            }
+            ReedlineEvent::ForwardSearchHistory => {
+                // isearch.c:141: the same machine, direction forward.
+                self.enter_history_search(SearchDirection::Forward);
+                Ok(EventStatus::Handled)
+            }
+            // text.c:639/653: the read happens on the *next* raw key —
+            // park the consumer and let the input loop feed it.
+            ReedlineEvent::SkipCsiSequence => {
+                self.pending_csi_skip = true;
+                Ok(EventStatus::Handled)
+            }
+            ReedlineEvent::ArrowKeyPrefix => {
+                self.pending_arrow_prefix = true;
                 Ok(EventStatus::Handled)
             }
             ReedlineEvent::Multiple(events) => {
@@ -4658,14 +4755,17 @@ impl Reedline {
         }
     }
 
-    /// Switch into reverse history search mode
+    /// Switch into history search mode — GNU's isearch entry
+    /// (`rl_reverse_search_history`/`rl_forward_search_history`,
+    /// isearch.c:130/141): one machine, the direction chosen at entry.
     ///
     /// This mode uses a separate prompt and handles keybindings slightly differently!
-    fn enter_history_search(&mut self) {
+    fn enter_history_search(&mut self, direction: SearchDirection) {
         self.history_cursor = HistoryCursor::new(
             HistoryNavigationQuery::SubstringSearch("".to_string()),
             self.get_history_session_id(),
         );
+        self.isearch_direction = direction;
         self.input_mode = InputMode::HistorySearch;
     }
 
@@ -5026,7 +5126,25 @@ impl Reedline {
             HistoryNavigationQuery::SubstringSearch(needle),
             self.get_history_session_id(),
         );
-        cursor.back(self.history.as_mut())?;
+        match self.isearch_direction {
+            SearchDirection::Backward => cursor.back(self.history.as_mut())?,
+            SearchDirection::Forward => {
+                // isearch.c: forward searches continue from
+                // `cxt->history_pos` — the last match, else the
+                // entry the line stands on (`where_history()`).
+                // `start_id` is exclusive, so the seed itself is
+                // skipped; at the live line there is nothing newer
+                // and the cursor stays empty (GNU fails the search).
+                let stand = last_match.clone().or_else(|| {
+                    self.history_recall_pos
+                        .and_then(|id| self.history.load(id).ok())
+                });
+                if let Some(seed) = stand {
+                    cursor.set_current(seed);
+                    cursor.forward(self.history.as_mut())?;
+                }
+            }
+        }
         if cursor.string_at_cursor().is_none() {
             if let Some(item) = last_match {
                 cursor.set_current(item);
@@ -5169,6 +5287,14 @@ impl Reedline {
                 });
             }
         }
+    }
+
+    /// Switch the active edit mode outside a key dispatch — the
+    /// host-channel face of [`ReedlineEvent::SwitchMode`], for GNU
+    /// bodies that end in a mode change (e.g. `rl_vi_start_inserting`
+    /// after `vi-tilde-expand`, vi_mode.c:414).
+    pub fn switch_edit_mode(&mut self, mode: PromptEditMode) {
+        self.change_edit_mode(ReedlineEvent::SwitchMode(mode));
     }
 
     /// Executes [`EditCommand`] actions by modifying the internal state appropriately. Does not output itself.
@@ -7174,7 +7300,7 @@ mod tests {
     #[test]
     fn auto_pairs_do_not_rewrite_reverse_history_search_query() {
         let mut rl = auto_pair_engine(&[('(', ')')]);
-        rl.enter_history_search();
+        rl.enter_history_search(SearchDirection::Backward);
 
         rl.handle_history_search_event(
             &DefaultPrompt::default(),
@@ -14383,6 +14509,123 @@ mod a6_probe {
         )
         .expect("arg fetch ok");
         assert_eq!(rl.editor.get_buffer(), "one");
+    }
+
+    #[test]
+    fn q3_forward_search_history_walks_newer_entries() {
+        // niubash#731: `forward-search-history` (isearch.c:141) enters
+        // the same isearch machine, direction forward.
+        let mut rl = engine(Box::<Emacs>::default());
+        let prompt = DefaultPrompt::default();
+        for cmd in ["alpha", "beta", "gamma"] {
+            let mut keys = text(cmd);
+            keys.push(enter());
+            let _ = drive_signal(&mut rl, &keys);
+            rl.begin_read();
+        }
+        // Stand on the oldest entry first, then open a forward
+        // isearch for "a": the newest matching entry wins.
+        rl.handle_event(&prompt, ReedlineEvent::FirstHistoryEntry)
+            .expect("first ok");
+        rl.handle_event(&prompt, ReedlineEvent::ForwardSearchHistory)
+            .expect("search opens");
+        rl.handle_history_search_event(
+            &prompt,
+            ReedlineEvent::Edit(vec![EditCommand::InsertChar('a')]),
+        )
+        .expect("needle ok");
+        // The cursor walked forward past "alpha" to the next match —
+        // a forward isearch keeps searching newer entries, so "beta"
+        // (the match after the stand) is what the machine holds.
+        let found = rl.history_cursor.string_at_cursor().unwrap_or_default();
+        assert!(found.contains('a'), "found {found:?}");
+        assert_ne!(found, "alpha", "forward search passed the stand");
+    }
+
+    #[test]
+    fn q3_skip_csi_sequence_consumes_tail() {
+        // text.c:639: param/intermediate bytes (0x20–0x3f) are eaten,
+        // the final byte ends the read — nothing reaches the buffer.
+        let mut rl = engine(Box::<Emacs>::default());
+        let prompt = DefaultPrompt::default();
+        rl.handle_event(&prompt, ReedlineEvent::SkipCsiSequence)
+            .expect("csi opens");
+        drive(&mut rl, &text("0;2~"));
+        assert_eq!(rl.editor.get_buffer(), "");
+        drive(&mut rl, &[ch('x')]);
+        assert_eq!(rl.editor.get_buffer(), "x");
+    }
+
+    #[test]
+    fn q3_arrow_key_prefix_dispatches_bound_arrow() {
+        // text.c:653: one char names the arrow — C is forward byte.
+        let mut rl = engine(Box::<Emacs>::default());
+        let prompt = DefaultPrompt::default();
+        drive(&mut rl, &text("ab"));
+        rl.handle_event(&prompt, ReedlineEvent::ArrowKeyPrefix)
+            .expect("prefix opens");
+        drive(&mut rl, &[ch('D')]); // backward byte
+        assert_eq!(rl.editor.insertion_point(), 1);
+        rl.handle_event(&prompt, ReedlineEvent::ArrowKeyPrefix)
+            .expect("prefix opens");
+        drive(&mut rl, &[ch('C')]); // forward byte
+        assert_eq!(rl.editor.insertion_point(), 2);
+        // A non-arrow char is consumed as GNU's ding — not typed.
+        rl.handle_event(&prompt, ReedlineEvent::ArrowKeyPrefix)
+            .expect("prefix opens");
+        drive(&mut rl, &[ch('q')]);
+        assert_eq!(rl.editor.get_buffer(), "ab");
+    }
+
+    #[test]
+    fn q3_rubout_or_delete_picks_by_cursor_position() {
+        // text.c:1331: end of line rubs out behind the point,
+        // elsewhere deletes the char under the point.
+        let mut rl = engine(Box::<Emacs>::default());
+        let prompt = DefaultPrompt::default();
+        drive(&mut rl, &text("ab"));
+        rl.handle_event(
+            &prompt,
+            ReedlineEvent::Edit(vec![EditCommand::RuboutOrDelete]),
+        )
+        .expect("rubout ok");
+        assert_eq!(rl.editor.get_buffer(), "a");
+        rl.handle_event(
+            &prompt,
+            ReedlineEvent::Edit(vec![EditCommand::MoveToStart { select: false }]),
+        )
+        .expect("move ok");
+        rl.handle_event(
+            &prompt,
+            ReedlineEvent::Edit(vec![EditCommand::RuboutOrDelete]),
+        )
+        .expect("delete ok");
+        assert_eq!(rl.editor.get_buffer(), "");
+    }
+
+    #[test]
+    fn q3_byte_motion_steps_ascii_and_clamps() {
+        // text.c:264/394: byte steps on ASCII text, clamped + ding at
+        // the edges.
+        let mut rl = engine(Box::<Emacs>::default());
+        let prompt = DefaultPrompt::default();
+        drive(&mut rl, &text("ab"));
+        rl.handle_event(
+            &prompt,
+            ReedlineEvent::Edit(vec![EditCommand::Move(MotionTarget::Byte(
+                Direction::Backward,
+            ))]),
+        )
+        .expect("byte back ok");
+        assert_eq!(rl.editor.insertion_point(), 1);
+        rl.handle_event(
+            &prompt,
+            ReedlineEvent::Edit(vec![EditCommand::Move(MotionTarget::Byte(
+                Direction::Forward,
+            ))]),
+        )
+        .expect("byte fwd ok");
+        assert_eq!(rl.editor.insertion_point(), 2);
     }
 }
 
