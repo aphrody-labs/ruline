@@ -89,4 +89,54 @@ pub trait EditMode: Send {
     fn flush_pending_sequence(&mut self) -> ReedlineEvent {
         ReedlineEvent::None
     }
+
+    /// Feed one character of a [`ReedlineEvent::ViKeys`] command into the
+    /// machine's vi command grammar — the name-delivery seam GNU's
+    /// `vi-*` funmap entries need (niubash#731).
+    ///
+    /// The returned [`ViCommandOutcome`] says whether the grammar still
+    /// waits on more characters (an operator's motion, a `f`/`m`/`` ` ``
+    /// argument) or the sequence resolved — successfully or not — and
+    /// carries the command's event plus whether the command entered
+    /// insertion, which a *standby* machine reports so the engine can
+    /// activate it (GNU's `rl_vi_start_inserting` switches keymaps
+    /// whatever map the name was bound in).
+    ///
+    /// The default declines the char: the machine is not a vi machine.
+    fn vi_command_char(&mut self, _c: char) -> ViCommandOutcome {
+        ViCommandOutcome::NotVi
+    }
+
+    /// Whether a [`ReedlineEvent::ViKeys`] sequence is still waiting on
+    /// characters — the engine then routes the next real keypress here
+    /// instead of parsing it, GNU's `_rl_vi_callback_getchar` read.
+    fn vi_command_pending(&self) -> bool {
+        false
+    }
+
+    /// Abort a pending [`ReedlineEvent::ViKeys`] sequence (a non-`Char`
+    /// key arrived while it was open). GNU consumes the read character
+    /// as the failed motion argument; so does this.
+    fn vi_command_abort(&mut self) {}
+}
+
+/// The result of feeding one [`ReedlineEvent::ViKeys`] character to an
+/// [`EditMode`].
+pub enum ViCommandOutcome {
+    /// The machine is not a vi machine — the char was not consumed.
+    NotVi,
+    /// The command grammar accepted the char and waits for more.
+    Pending,
+    /// The sequence finished (a complete command, or an aborted one).
+    Done {
+        /// The resolved command's event — `ReedlineEvent::None` for an
+        /// aborted sequence (GNU's ding at a bad motion).
+        event: ReedlineEvent,
+        /// The command entered insertion (`a`/`i`/`c…`/`R`/`s`/`A`/`I`/`C`/`S`),
+        /// so a machine that is not active must activate into vi-insert —
+        /// GNU's `rl_vi_start_inserting` runs whatever keymap the name was
+        /// bound in. `false` for every other landing, including commands
+        /// run from insert that leave the machine there.
+        lands_insert: bool,
+    },
 }

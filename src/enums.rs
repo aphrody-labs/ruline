@@ -308,6 +308,14 @@ pub enum MotionTarget {
     /// A byte position, clamped into the buffer — measured from the buffer
     /// start, not a displacement from the cursor.
     Position(usize),
+    /// The position recorded by [`ReedlineEvent::ViSetMark`] under this
+    /// mark name — GNU `` ` `` / vi `goto-mark` (vi_mode.c `rl_vi_goto_mark`,
+    /// `` '<char> `` in the command map). The vi grammar cannot see the
+    /// buffer, so the target stays symbolic until the engine resolves it
+    /// against its mark table right before the edit runs; an unset mark is
+    /// a dead target — the edit it belongs to reports inapplicable, GNU's
+    /// `rl_ding`.
+    ViMark(char),
 }
 
 impl MotionTarget {
@@ -347,6 +355,7 @@ impl MotionTarget {
             MotionTarget::LineStartNonBlank => None,
             MotionTarget::MatchingBracket => None,
             MotionTarget::Column(_) => None,
+            MotionTarget::ViMark(_) => None,
         }
     }
 }
@@ -979,6 +988,75 @@ pub enum EditCommand {
 }
 
 impl EditCommand {
+    /// Whether this command carries a [`MotionTarget::ViMark`] — a
+    /// symbolic mark the engine still has to resolve (niubash#731,
+    /// `` `<char> `` goto-mark).
+    pub(crate) fn has_vi_mark(&self) -> bool {
+        self.vi_mark_target().is_some()
+    }
+
+    /// The same command with every `MotionTarget::ViMark` lowered to
+    /// the position `marks` recorded for the name — `None` when a mark
+    /// the command needs was never set (GNU dings; the engine treats
+    /// the whole batch as inapplicable).
+    pub(crate) fn resolve_vi_marks(
+        &self,
+        marks: &std::collections::HashMap<char, usize>,
+    ) -> Option<Self> {
+        let resolve = |target: MotionTarget| -> Option<MotionTarget> {
+            match target {
+                MotionTarget::ViMark(mark) => marks.get(&mark).copied().map(MotionTarget::Position),
+                target => Some(target),
+            }
+        };
+        Some(match self {
+            EditCommand::Move(target) => EditCommand::Move(resolve(*target)?),
+            EditCommand::Extend(target) => EditCommand::Extend(resolve(*target)?),
+            EditCommand::Select(target) => EditCommand::Select(resolve(*target)?),
+            EditCommand::Erase(target) => EditCommand::Erase(resolve(*target)?),
+            EditCommand::Cut {
+                target,
+                granularity,
+            } => EditCommand::Cut {
+                target: resolve(*target)?,
+                granularity: *granularity,
+            },
+            EditCommand::Copy {
+                target,
+                granularity,
+            } => EditCommand::Copy {
+                target: resolve(*target)?,
+                granularity: *granularity,
+            },
+            EditCommand::Change {
+                target,
+                granularity,
+            } => EditCommand::Change {
+                target: resolve(*target)?,
+                granularity: *granularity,
+            },
+            other => other.clone(),
+        })
+    }
+
+    /// The [`MotionTarget::ViMark`] name this command carries, if any.
+    fn vi_mark_target(&self) -> Option<char> {
+        let target = match self {
+            EditCommand::Move(target)
+            | EditCommand::Extend(target)
+            | EditCommand::Select(target)
+            | EditCommand::Erase(target)
+            | EditCommand::Cut { target, .. }
+            | EditCommand::Copy { target, .. }
+            | EditCommand::Change { target, .. } => target,
+            _ => return None,
+        };
+        match target {
+            MotionTarget::ViMark(mark) => Some(*mark),
+            _ => None,
+        }
+    }
+
     /// Determine if a certain operation should be undoable
     /// or if the operations should be coalesced for undoing
     pub fn edit_type(&self) -> EditType {
@@ -1783,6 +1861,54 @@ pub enum ReedlineEvent {
     /// — GNU dings — when nothing is recorded. Unbound in GNU's maps
     /// too; exposed for custom bindings.
     PrintLastKbdMacro,
+
+    /// Inject keystrokes into the vi machine's command grammar — the
+    /// delivery vehicle for GNU readline's `vi-*` funmap names
+    /// (funmap.c / vi_mode.c, niubash#731): a host that resolves a
+    /// `bind`-style name like `vi-delete-to` to its command keystrokes
+    /// (`d`) hands the chars here instead of re-implementing the
+    /// command.
+    ///
+    /// Each char feeds the pending command grammar, so a sequence may
+    /// complete (`x`), stay open waiting on its motion or target char
+    /// (`d`, `f`, `m`), or abort it (`d` followed by a non-motion).
+    /// While a sequence is open the next real keypress completes it —
+    /// the same read GNU does inside `rl_vi_domove` /
+    /// `_rl_vi_callback_char_search` — and a non-`Char` key aborts the
+    /// sequence (consumed, like the motion char GNU read itself).
+    ///
+    /// The command runs wherever the binding fired: against an active
+    /// vi machine in any mode — a command bound while inserting moves
+    /// or edits but does not leave insert unless the command itself
+    /// enters insertion (`a`/`c…`), GNU's keymap-independent function
+    /// semantics — or against a standby vi machine, where a command
+    /// that enters insertion additionally activates it. The event is
+    /// inapplicable when no vi machine exists.
+    ViKeys(Vec<char>),
+
+    /// Record the insertion point under the vi mark name — GNU
+    /// `rl_vi_set_mark` (vi_mode.c, `m<char>` in the vi command map).
+    /// The mark is looked up when a `` ` `` motion resolves, so a
+    /// stale mark outside the line's current length clamps at the
+    /// buffer end.
+    ViSetMark(char),
+
+    /// Jump the history position to an entry by its absolute command
+    /// number — GNU `fetch-history` / `vi-fetch-history`
+    /// (misc.c:722 `rl_fetch_history`, the vi `G`).
+    ///
+    /// `count` is `None` without an explicit numeric argument and
+    /// lands on the oldest entry, as GNU's `rl_beginning_of_history`
+    /// fallback. With an argument, GNU computes `wanted` from the
+    /// *current* position — `count` is a command number (1-based like
+    /// `history` output), a negative `count` steps back from the
+    /// current position instead — and out-of-range lands on the
+    /// oldest entry, or does nothing under vi command mode, where
+    /// GNU dings.
+    FetchHistory {
+        /// GNU `rl_numeric_arg` when `rl_explicit_arg`, else `None`
+        count: Option<i32>,
+    },
 }
 
 /// What an edit mode or event handler did with one event.

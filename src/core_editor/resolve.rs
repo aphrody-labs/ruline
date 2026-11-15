@@ -104,6 +104,10 @@ pub(crate) fn resolve_motion(
             span(head, on_grapheme)
         }
         MotionTarget::Position(n) => span(n.min(buf.len()), false),
+        // The engine resolves `ViMark` against its mark table before a
+        // command batch runs; one that reaches here stands still — GNU's
+        // ding-on-unset-mark leaves the cursor where it is.
+        MotionTarget::ViMark(_) => span(origin, false),
         MotionTarget::BufferEdge(Direction::Backward) => span(0, false),
         MotionTarget::BufferEdge(Direction::Forward) => span(buf.len(), false),
         // Exclusive, because covering the landing grapheme depends on which side

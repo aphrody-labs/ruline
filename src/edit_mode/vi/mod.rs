@@ -10,7 +10,7 @@ pub use vi_keybindings::{
 
 use super::{
     combine_events, is_meta_char, is_plain_char, is_text_char, normalized_key_combination,
-    parse_non_key_event, EditMode, SequenceResolution, SequenceResolver,
+    parse_non_key_event, EditMode, SequenceResolution, SequenceResolver, ViCommandOutcome,
 };
 use crate::{
     core_editor::locate_word,
@@ -72,6 +72,13 @@ pub struct Vi {
     // arrives through `note_edit_outcome`, the revocation is staged
     // here.
     pending_operator: Option<PendingOperator>,
+    // A `ReedlineEvent::ViKeys` sequence is mid-parse — the mode the
+    // machine was in when it started (GNU's funmap functions run
+    // under whatever keymap they were bound to). While `Some`, real
+    // keypresses feed the command grammar instead of the mode's
+    // normal dispatch, the read GNU does inside `rl_vi_domove` and
+    // `_rl_vi_callback_char_search`.
+    command_inject: Option<ViMode>,
 }
 
 /// A dispatched whole-line operator awaiting the editor's verdict.
@@ -123,6 +130,7 @@ impl Vi {
             insert_capture: None,
             replace_session: false,
             pending_operator: None,
+            command_inject: None,
         }
     }
 
@@ -177,6 +185,7 @@ impl EditMode for Vi {
                 self.cache.clear();
                 self.resolver.reset();
                 self.pending_operator = None;
+                self.command_inject = None;
                 self.mode = ViMode::from(target);
                 EventStatus::Handled
             }
@@ -215,6 +224,29 @@ impl EditMode for Vi {
 
     fn reset_pending_sequence(&mut self) {
         self.resolver.reset();
+        self.command_inject = None;
+    }
+
+    /// A `ViKeys` char starts — or continues — a command-grammar
+    /// sequence. The first char records the mode the sequence began
+    /// in (the GNU funmap name's bound keymap); `command_grammar_key`
+    /// applies the injection landing rule, which keeps an
+    /// insert-started command in insert unless the command itself
+    /// opens an insert session.
+    fn vi_command_char(&mut self, c: char) -> ViCommandOutcome {
+        if self.command_inject.is_none() {
+            self.command_inject = Some(self.mode);
+        }
+        self.command_grammar_key(c, true)
+    }
+
+    fn vi_command_pending(&self) -> bool {
+        self.command_inject.is_some()
+    }
+
+    fn vi_command_abort(&mut self) {
+        self.command_inject = None;
+        self.cache.clear();
     }
 
     fn flush_pending_sequence(&mut self) -> ReedlineEvent {
@@ -281,9 +313,9 @@ fn with_trailing_repaint(event: ReedlineEvent) -> ReedlineEvent {
 }
 
 impl Vi {
-    /// Route one keypress: the meta prefix first, then an explicit chord if
-    /// one is live (or may start here), then the mode's own grammar and
-    /// tables.
+    /// Route one keypress: a pending `ViKeys` command read first, then
+    /// the meta prefix, then an explicit chord if one is live (or may
+    /// start here), then the mode's own grammar and tables.
     ///
     /// **Vi grammar wins.** A chord may only start where an explicit binding
     /// would fire: a key that is bound, or a non-character key. An unbound
@@ -291,6 +323,28 @@ impl Vi {
     /// cannot be shadowed by a sequence. Once a chord *is* pending it owns the
     /// next keys, so the second `j` of `j j` is not parsed as a motion.
     fn dispatch_key(&mut self, modifiers: KeyModifiers, code: KeyCode) -> ReedlineEvent {
+        // A `ViKeys` command sequence mid-read owns the next key
+        // entirely — GNU's funmap functions read the motion/target
+        // character themselves (`rl_vi_domove`'s getchar), so no
+        // binding, meta convention, or mode dispatch applies to it. A
+        // `Char` completes the read; anything else aborts the sequence
+        // and is consumed the way GNU's read consumed it.
+        if self.command_inject.is_some() {
+            if let KeyCode::Char(c) = code {
+                let c = c.to_ascii_lowercase();
+                let c = if modifiers == KeyModifiers::SHIFT {
+                    c.to_ascii_uppercase()
+                } else {
+                    c
+                };
+                return match self.command_grammar_key(c, true) {
+                    ViCommandOutcome::Done { event, .. } => event,
+                    _ => ReedlineEvent::None,
+                };
+            }
+            self.vi_command_abort();
+            return ReedlineEvent::None;
+        }
         if let Some(event) = self.meta_as_escape(modifiers, code) {
             return event;
         }
@@ -482,75 +536,16 @@ impl Vi {
                 // before a custom keybinding can claim the next key; otherwise a
                 // binding on that second key would hijack the sequence.
                 if !self.cache.is_empty() || (binding.is_none() && is_typeable) {
-                    self.cache.push(if modifier == KeyModifiers::SHIFT {
-                        c.to_ascii_uppercase()
-                    } else {
-                        c
-                    });
-
-                    let res = parse(self.mode, &mut self.cache.iter().peekable());
-
-                    if !res.is_valid() {
-                        self.cache.clear();
-                        ReedlineEvent::None
-                    } else if res.is_complete(self.mode) {
-                        let previous_snapshot = self.previous.clone();
-                        let mut event = res.to_reedline_event(self);
-                        let previous_mode = self.mode;
-                        let mode_changed = match res.changes_mode(previous_mode) {
-                            Some(mode) => {
-                                self.mode = mode;
-                                mode != previous_mode
-                            }
-                            None => false,
-                        };
-                        self.cache.clear();
-                        if mode_changed && self.mode == ViMode::Insert {
-                            // A command sequence just opened an insert
-                            // session: capture what gets typed, so `.`
-                            // replays the text with the command (GNU
-                            // keeps it as `_rl_vi_last_insert`).
-                            self.insert_capture = Some(String::new());
-                            if self.replace_session && !res.is_replace_entry() {
-                                // Overstrike left on by an `R` action
-                                // replayed through `.` (a replay opens
-                                // no session to leave): clear it before
-                                // this plain session starts typing.
-                                self.replace_session = false;
-                                event = ReedlineEvent::Multiple(vec![
-                                    ReedlineEvent::OverwriteMode(Some(false)),
-                                    event,
-                                ]);
-                            }
-                        }
-                        // A whole-line operator's motion can only be
-                        // judged by the editor, which owns the buffer:
-                        // if the line target is dead (`cj` on the last
-                        // line), GNU cancels the operator before its
-                        // dispatch (`rl_vi_domove`, vi_mode.c:1385).
-                        // Stage the revocation until the editor's
-                        // verdict arrives via `note_edit_outcome`.
-                        if let Some(command) = line_operator_command(&event) {
-                            self.pending_operator = Some(PendingOperator {
-                                command,
-                                previous: previous_snapshot,
-                                mode_before: previous_mode,
-                                entered_insert: mode_changed && self.mode == ViMode::Insert,
-                            });
-                        }
-                        // A mode change must repaint even when the edit is a
-                        // no-op (e.g. `a` at line end), mirroring helix's
-                        // `Multiple([event, Repaint])` on a mode switch.
-                        // `changes_mode` can also report the current mode
-                        // (`dw`/`yy` report `Normal` from `Normal`), so only
-                        // an actual change gains the trailing `Repaint`.
-                        if mode_changed {
-                            with_trailing_repaint(event)
+                    match self.command_grammar_key(
+                        if modifier == KeyModifiers::SHIFT {
+                            c.to_ascii_uppercase()
                         } else {
-                            event
-                        }
-                    } else {
-                        ReedlineEvent::None
+                            c
+                        },
+                        false,
+                    ) {
+                        ViCommandOutcome::Done { event, .. } => event,
+                        _ => ReedlineEvent::None,
                     }
                 } else if let Some(event) = binding {
                     event
@@ -604,6 +599,116 @@ impl Vi {
         }
     }
 
+    /// Push `c` onto the command-grammar cache and parse — the shared
+    /// body behind typed normal/visual chars and `ViKeys` injection.
+    ///
+    /// `injected` marks the `ViKeys` path (niubash#731): GNU's funmap
+    /// functions run under whatever keymap they were bound to, so a
+    /// command injected while the machine is in insert moves or edits
+    /// but does not leave insert — only a command that enters
+    /// insertion (`a`/`c…`) lands a mode change. The grammar still
+    /// parses under the Normal/Visual command grammar regardless.
+    fn command_grammar_key(&mut self, c: char, injected: bool) -> ViCommandOutcome {
+        self.cache.push(c);
+        // Visual keeps its own grammar (operators take the selection);
+        // every other mode parses under the command grammar — an
+        // insertion-bound funmap name still reads a command sequence.
+        let grammar_mode = if self.mode == ViMode::Visual {
+            ViMode::Visual
+        } else {
+            ViMode::Normal
+        };
+        let res = parse(grammar_mode, &mut self.cache.iter().peekable());
+
+        if !res.is_valid() {
+            self.cache.clear();
+            self.command_inject = None;
+            return ViCommandOutcome::Done {
+                event: ReedlineEvent::None,
+                lands_insert: false,
+            };
+        }
+        if !res.is_complete(grammar_mode) {
+            return ViCommandOutcome::Pending;
+        }
+        let mode_before = self.command_inject.take().unwrap_or(self.mode);
+        let changes = res.changes_mode(grammar_mode);
+        // Injection landing rule (see method docs): an insert-started
+        // command never lands command mode — `dw` from an
+        // insertion-bound name stays inserting, as GNU's function
+        // leaves `_rl_keymap` alone.
+        let landing = match (injected, mode_before) {
+            (true, ViMode::Insert) => Some(ViMode::Insert),
+            _ => changes.or(Some(mode_before)),
+        };
+        let event = self.finish_command_sequence(&res, mode_before, landing);
+        ViCommandOutcome::Done {
+            event,
+            lands_insert: changes == Some(ViMode::Insert),
+        }
+    }
+
+    /// On a complete, valid sequence: emit its event, land the machine
+    /// at `landing` (or `mode_before` when the sequence reports no
+    /// transition), and run the bookkeeping every completed command
+    /// shares — insert-session capture for `.`, the staged whole-line
+    /// operator revocation, and the mode-change repaint.
+    fn finish_command_sequence(
+        &mut self,
+        res: &parser::ParsedViSequence,
+        mode_before: ViMode,
+        landing: Option<ViMode>,
+    ) -> ReedlineEvent {
+        let previous_snapshot = self.previous.clone();
+        let mut event = res.to_reedline_event(self);
+        let landed = landing.unwrap_or(mode_before);
+        let mode_changed = landed != mode_before;
+        self.mode = landed;
+        self.cache.clear();
+        if mode_changed && self.mode == ViMode::Insert {
+            // A command sequence just opened an insert
+            // session: capture what gets typed, so `.`
+            // replays the text with the command (GNU
+            // keeps it as `_rl_vi_last_insert`).
+            self.insert_capture = Some(String::new());
+            if self.replace_session && !res.is_replace_entry() {
+                // Overstrike left on by an `R` action
+                // replayed through `.` (a replay opens
+                // no session to leave): clear it before
+                // this plain session starts typing.
+                self.replace_session = false;
+                event =
+                    ReedlineEvent::Multiple(vec![ReedlineEvent::OverwriteMode(Some(false)), event]);
+            }
+        }
+        // A whole-line operator's motion can only be
+        // judged by the editor, which owns the buffer:
+        // if the line target is dead (`cj` on the last
+        // line), GNU cancels the operator before its
+        // dispatch (`rl_vi_domove`, vi_mode.c:1385).
+        // Stage the revocation until the editor's
+        // verdict arrives via `note_edit_outcome`.
+        if let Some(command) = line_operator_command(&event) {
+            self.pending_operator = Some(PendingOperator {
+                command,
+                previous: previous_snapshot,
+                mode_before,
+                entered_insert: mode_changed && self.mode == ViMode::Insert,
+            });
+        }
+        // A mode change must repaint even when the edit is a
+        // no-op (e.g. `a` at line end), mirroring helix's
+        // `Multiple([event, Repaint])` on a mode switch.
+        // `changes_mode` can also report the current mode
+        // (`dw`/`yy` report `Normal` from `Normal`), so only
+        // an actual change gains the trailing `Repaint`.
+        if mode_changed {
+            with_trailing_repaint(event)
+        } else {
+            event
+        }
+    }
+
     /// Leave for normal mode the way `Esc` does: drop any pending sequence,
     /// let the engine close menus and selections, and when leaving insert step
     /// the caret back onto the last typed grapheme, as vim does.
@@ -611,6 +716,7 @@ impl Vi {
         self.cache.clear();
         self.resolver.reset();
         self.pending_operator = None;
+        self.command_inject = None;
         let leaving_insert = self.mode == ViMode::Insert;
         self.mode = ViMode::Normal;
         let mut events = vec![ReedlineEvent::Esc];

@@ -169,6 +169,15 @@ where
                 Some(Command::Uppercase)
             }
         }
+        // GNU `rl_vi_set_mark` (vi_mode.c, `m<char>`): the next char
+        // names the mark under which the point is recorded.
+        Some('m') => {
+            let _ = input.next();
+            input
+                .next()
+                .map(|c| Command::SetMark(*c))
+                .or(Some(Command::Incomplete))
+        }
         _ => None,
     }
 }
@@ -246,6 +255,9 @@ pub(super) enum Command {
         text_object: TextObject,
     },
     SwapCursorAndAnchor,
+    /// vi `m<char>` — GNU `rl_vi_set_mark` (vi_mode.c): record the
+    /// point under the mark name for `` `<char> `` (goto-mark).
+    SetMark(char),
 }
 
 impl Command {
@@ -398,6 +410,9 @@ impl Command {
             Self::SwapCursorAndAnchor => {
                 vec![ReedlineOption::Edit(EditCommand::SwapCursorAndAnchor)]
             }
+            // GNU `_rl_vi_set_mark` records `rl_point` — the engine owns
+            // the point, so the command emits the event that records it.
+            Self::SetMark(c) => vec![ReedlineOption::Event(ReedlineEvent::ViSetMark(*c))],
         }
     }
 
@@ -424,6 +439,7 @@ impl Command {
                 | Motion::Start
                 | Motion::End
                 | Motion::MatchBrackets
+                | Motion::GotoMark(_)
                 | Motion::Column => motion.target().map(|target| {
                     vec![ReedlineOption::Edit(EditCommand::Cut {
                         target,
@@ -503,6 +519,7 @@ impl Command {
                     | Motion::Start
                     | Motion::End
                     | Motion::MatchBrackets
+                    | Motion::GotoMark(_)
                     | Motion::Column => motion.target().map(|target| {
                         vec![ReedlineOption::Edit(EditCommand::Cut {
                             target,
@@ -570,6 +587,7 @@ impl Command {
                 | Motion::Start
                 | Motion::End
                 | Motion::MatchBrackets
+                | Motion::GotoMark(_)
                 | Motion::Column => motion.target().map(|target| {
                     vec![ReedlineOption::Edit(EditCommand::Copy {
                         target,

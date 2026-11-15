@@ -472,6 +472,12 @@ pub struct Reedline {
     // dispatches the terminating key with the count (misc.c:174).
     pending_arg: Option<PendingArg>,
 
+    // The vi marks `m<char>` recorded (GNU `vi_mark_chars`, vi_mode.c):
+    // mark name → byte offset the mark saw. Marks outlive the line
+    // they were set on, like GNU's static table; a `` `<char> ``
+    // motion over a stale offset clamps at the buffer end.
+    vi_marks: std::collections::HashMap<char, usize>,
+
     // Nesting depth of the event currently being handled — set from the
     // pending_input tag for replayed keys, 0 for live input. A
     // KeySequence handled at depth d enqueues at d+1.
@@ -1158,6 +1164,7 @@ impl Reedline {
             recording: None,
             last_macro: Vec::new(),
             pending_arg: None,
+            vi_marks: std::collections::HashMap::new(),
             quoted_insert: false,
             edit_dispatched: false,
             pending_char_search: None,
@@ -2724,6 +2731,54 @@ impl Reedline {
                     typein_run = false;
                     continue;
                 }
+                // A *standby* vi machine mid-`ViKeys` read owns the next
+                // key — the active machine intercepts its own inside
+                // `dispatch_key`, but a standby only sees what the
+                // engine feeds it. A `Char` completes the read; any
+                // other key aborts it (consumed, GNU's motion read).
+                if self
+                    .standby_edit_modes
+                    .iter()
+                    .any(|mode| mode.vi_command_pending())
+                {
+                    let index = self
+                        .standby_edit_modes
+                        .iter()
+                        .position(|mode| mode.vi_command_pending())
+                        .expect("checked above");
+                    let outcome = match &event {
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char(c),
+                            modifiers,
+                            ..
+                        }) => {
+                            let c = c.to_ascii_lowercase();
+                            let c = if *modifiers == KeyModifiers::SHIFT {
+                                c.to_ascii_uppercase()
+                            } else {
+                                c
+                            };
+                            Some(self.standby_edit_modes[index].vi_command_char(c))
+                        }
+                        _ => {
+                            self.standby_edit_modes[index].vi_command_abort();
+                            None
+                        }
+                    };
+                    if let Some(crate::edit_mode::ViCommandOutcome::Done {
+                        event,
+                        lands_insert,
+                    }) = outcome
+                    {
+                        if lands_insert {
+                            let target = self.standby_edit_modes[index].edit_mode();
+                            self.change_edit_mode(ReedlineEvent::SwitchMode(target));
+                        }
+                        reedline_events.push((event, self.replay_depth));
+                    }
+                    typein_run = false;
+                    continue;
+                }
                 if let Ok(raw) = ReedlineRawEvent::try_from(event) {
                     match self.edit_mode.parse_event(raw) {
                         // A chord's prefix half produced no event — the
@@ -3054,6 +3109,13 @@ impl Reedline {
         // reading `rl_explicit_arg`) are not expressed yet — the signed
         // `count` and `explicit` ride along for them.
         if let ReedlineEvent::WithArg { count, event, .. } = event {
+            if let ReedlineEvent::FetchHistory { .. } = *event {
+                // `rl_fetch_history` (misc.c:722) reads `rl_explicit_arg`
+                // as a history command number, not a repeat count — the
+                // one consumer of the signed value, so it peels off here
+                // rather than multiplying.
+                return self.fetch_history(Some(count));
+            }
             if count == 0 {
                 // An explicit `M-0` dispatches with count 0.
                 return Ok(EventStatus::Handled);
@@ -3356,6 +3418,9 @@ impl Reedline {
             | ReedlineEvent::Suspend
             | ReedlineEvent::PossibleCompletions
             | ReedlineEvent::InsertCompletions
+            | ReedlineEvent::ViKeys(_)
+            | ReedlineEvent::ViSetMark(_)
+            | ReedlineEvent::FetchHistory { .. }
             | ReedlineEvent::SwitchMode(_) => Ok(EventStatus::Inapplicable),
         }
     }
@@ -3866,6 +3931,13 @@ impl Reedline {
             ReedlineEvent::NonIncrementalSearchAgain { direction } => {
                 self.noninc_search_again(direction)
             }
+            ReedlineEvent::ViKeys(chars) => self.dispatch_vi_keys(prompt, chars),
+            ReedlineEvent::ViSetMark(mark) => {
+                // GNU `_rl_vi_set_mark` (vi_mode.c): record `rl_point`.
+                self.vi_marks.insert(mark, self.editor.insertion_point());
+                Ok(EventStatus::Handled)
+            }
+            ReedlineEvent::FetchHistory { count } => self.fetch_history(count),
             ReedlineEvent::OverwriteMode(on) => {
                 // GNU rl_overwrite_mode: arg>0 sets, arg<=0 clears,
                 // no arg toggles.
@@ -4287,6 +4359,135 @@ impl Reedline {
             self.editor.sync_edit_mode(after);
         }
         status
+    }
+
+    /// Feed `chars` into a vi machine's command grammar — the delivery
+    /// half of [`ReedlineEvent::ViKeys`] (niubash#731). The active
+    /// machine answers first; when it is not a vi machine the
+    /// standbys are offered the sequence in registration order,
+    /// because GNU's `vi-*` functions run under whatever keymap the
+    /// name was bound into. A command that enters insertion on a
+    /// standby activates that machine (`rl_vi_start_inserting`
+    /// switches the live keymap); the resolved command's own event
+    /// runs through the ordinary dispatch either way.
+    fn dispatch_vi_keys(
+        &mut self,
+        prompt: &dyn Prompt,
+        chars: Vec<char>,
+    ) -> io::Result<EventStatus> {
+        if let Some((event, lands_insert)) = Self::feed_vi_chars(self.edit_mode.as_mut(), &chars) {
+            let status = self.handle_event(prompt, event)?;
+            // Activation is already true of the active machine: its own
+            // mode moved inside `finish_command_sequence`. The flag only
+            // matters for standbys.
+            let _ = lands_insert;
+            return Ok(status);
+        }
+        for index in 0..self.standby_edit_modes.len() {
+            let Some((event, lands_insert)) =
+                Self::feed_vi_chars(self.standby_edit_modes[index].as_mut(), &chars)
+            else {
+                continue;
+            };
+            let status = self.handle_event(prompt, event)?;
+            if lands_insert && matches!(status, EventStatus::Handled) {
+                let target = self.standby_edit_modes[index].edit_mode();
+                self.change_edit_mode(ReedlineEvent::SwitchMode(target));
+            }
+            return Ok(status);
+        }
+        Ok(EventStatus::Inapplicable)
+    }
+
+    /// Feed every char through one machine's vi command grammar.
+    /// `Some((event, lands_insert))` for a vi machine — the last
+    /// `Done` outcome (a still-pending sequence reports `None` —
+    /// legal: `ViKeys` may hand only the first half of a command and
+    /// the next real key completes it); `None` when the machine is
+    /// not a vi machine.
+    fn feed_vi_chars(machine: &mut dyn EditMode, chars: &[char]) -> Option<(ReedlineEvent, bool)> {
+        let mut outcome: Option<(ReedlineEvent, bool)> = None;
+        for &c in chars {
+            match machine.vi_command_char(c) {
+                crate::edit_mode::ViCommandOutcome::NotVi => {
+                    machine.vi_command_abort();
+                    return None;
+                }
+                crate::edit_mode::ViCommandOutcome::Pending => {
+                    outcome = Some((ReedlineEvent::None, false));
+                }
+                crate::edit_mode::ViCommandOutcome::Done {
+                    event,
+                    lands_insert,
+                } => {
+                    outcome = Some((event, lands_insert));
+                }
+            }
+        }
+        outcome
+    }
+
+    /// GNU `rl_fetch_history` (misc.c:722): without an explicit
+    /// argument the oldest entry (`rl_beginning_of_history`); with
+    /// one, `count` is a command number (1-based, like `history`
+    /// output) and GNU computes `wanted` back from the *current*
+    /// position — a negative `count` steps back instead. Out of
+    /// range lands on the oldest entry, except under vi command
+    /// mode, where GNU dings and does not move.
+    fn fetch_history(&mut self, count: Option<i32>) -> io::Result<EventStatus> {
+        let entries = self.history.search(SearchQuery::everything(
+            crate::SearchDirection::Forward,
+            self.get_history_session_id(),
+        ))?;
+        if entries.is_empty() {
+            return Ok(EventStatus::Inapplicable);
+        }
+        // GNU `where_history()`: the index the buffer stands on. The
+        // live line sits one past the newest entry.
+        let current_id = self
+            .history_recall_pos
+            .or_else(|| self.history_cursor.id_at_cursor());
+        let where_pos = current_id
+            .and_then(|id| entries.iter().position(|item| item.id == Some(id)))
+            .unwrap_or(entries.len());
+        let landing = match count {
+            None => 0,
+            Some(count) => {
+                // misc.c:722: `wanted` is the command's number as
+                // `history` prints it — positive `count` counts back
+                // from the live line, negative counts forward from the
+                // oldest — then `wanted -= history_base` makes it a
+                // 0-based offset (history_base is 1 in this model).
+                let nhist = where_pos as i64 + 1;
+                let count = count as i64;
+                let wanted = if count >= 0 { nhist - count } else { -count };
+                if wanted <= 0 || wanted >= nhist {
+                    if matches!(self.edit_mode.edit_mode(), PromptEditMode::Vi(_)) {
+                        // GNU dings under vi and keeps the line.
+                        return Ok(EventStatus::Inapplicable);
+                    }
+                    0
+                } else {
+                    (wanted - 1) as usize
+                }
+            }
+        };
+        let item = entries[landing].clone();
+        // Land like a traversal landing: reseed the cursor onto the
+        // entry (fini's pattern), then let the shared update paint it.
+        let mut cursor = HistoryCursor::new(
+            HistoryNavigationQuery::Normal(self.editor.line_buffer().clone()),
+            self.get_history_session_id(),
+        );
+        cursor.set_current(item);
+        self.history_cursor = cursor;
+        self.input_mode = InputMode::HistoryTraversal;
+        self.update_buffer_from_history();
+        self.editor.move_to_start(false);
+        self.editor.move_to_line_end(false);
+        self.editor.commit_cursor();
+        self.editor.settle_history_landing();
+        Ok(EventStatus::Handled)
     }
 
     fn handle_mouse_click(&mut self, column: u16, row: u16) -> Result<()> {
@@ -4994,6 +5195,23 @@ impl Reedline {
         // vi `Esc`→normal `MoveLeft`. The commands settle the cursor themselves,
         // and the pre-paint `set_edit_mode` makes the final commit.
         self.editor.sync_edit_mode(self.edit_mode.edit_mode());
+
+        // Resolve symbolic vi marks (`MotionTarget::ViMark`, the
+        // `` `<char> `` motion) against the mark table: the vi grammar
+        // cannot see the buffer, so it hands the name down unresolved.
+        // An unset mark makes GNU ding and run nothing
+        // (`_rl_vi_goto_mark` finds no position) — the whole batch
+        // dies here, since a dead motion cancels its operator too.
+        if commands.iter().any(|command| command.has_vi_mark()) {
+            let mut resolved = Vec::with_capacity(commands.len());
+            for command in commands {
+                match command.resolve_vi_marks(&self.vi_marks) {
+                    Some(command) => resolved.push(command),
+                    None => return EditCommandStatus::Inapplicable,
+                }
+            }
+            return self.apply_edit_commands(&resolved);
+        }
 
         // Run every command, but report the edit as applied if any command applied.
         // This mirrors `Multiple`, where any handled event wins.
@@ -14023,7 +14241,10 @@ mod a6_probe {
         let mut keys = text("echo foo bar");
         keys.push(enter());
         let sig = drive_signal(&mut rl, &keys);
-        assert!(matches!(&sig, Some(Signal::Success(s)) if s == "echo foo bar"), "got {sig:?}");
+        assert!(
+            matches!(&sig, Some(Signal::Success(s)) if s == "echo foo bar"),
+            "got {sig:?}"
+        );
         drive(&mut rl, &[alt('.')]);
         assert_eq!(rl.editor.get_buffer(), "bar");
         drive(&mut rl, &[alt('.')]);
@@ -14083,6 +14304,85 @@ mod a6_probe {
         drive(&mut rl, &[ch('A')]);
         drive(&mut rl, &[ch('X')]);
         assert_eq!(rl.editor.get_buffer(), "ab cdX");
+    }
+
+    #[test]
+    fn q3_vikeys_mark_round_trip() {
+        // niubash#731: `ViKeys(['m'])` opens the command-grammar read;
+        // the next real key is the mark name, and `` ` `` jumps back.
+        let mut rl = engine(Box::<Vi>::default());
+        let prompt = DefaultPrompt::default();
+        let mut keys = text("hello world");
+        keys.push(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        drive(&mut rl, &keys);
+        let marked = rl.editor.insertion_point();
+        rl.handle_event(&prompt, ReedlineEvent::ViKeys(vec!['m']))
+            .expect("m injects");
+        drive(&mut rl, &[ch('a')]);
+        rl.handle_event(
+            &prompt,
+            ReedlineEvent::Edit(vec![EditCommand::MoveToStart { select: false }]),
+        )
+        .expect("move ok");
+        assert_eq!(rl.editor.insertion_point(), 0);
+        rl.handle_event(&prompt, ReedlineEvent::ViKeys(vec!['`']))
+            .expect("` injects");
+        drive(&mut rl, &[ch('a')]);
+        assert_eq!(rl.editor.insertion_point(), marked);
+    }
+
+    #[test]
+    fn q3_fetch_history_no_arg_lands_oldest() {
+        // GNU `rl_fetch_history` (misc.c:722): without an explicit
+        // argument it is `rl_beginning_of_history`.
+        let mut rl = engine(Box::<Emacs>::default());
+        let prompt = DefaultPrompt::default();
+        for cmd in ["one", "two", "three"] {
+            let mut keys = text(cmd);
+            keys.push(enter());
+            let _ = drive_signal(&mut rl, &keys);
+            rl.begin_read();
+        }
+        rl.handle_event(&prompt, ReedlineEvent::FetchHistory { count: None })
+            .expect("fetch ok");
+        assert_eq!(rl.editor.get_buffer(), "one");
+    }
+
+    #[test]
+    fn q3_fetch_history_explicit_arg_counts_back() {
+        // Explicit arg = a history command number (misc.c:722's
+        // `wanted = where_history() + history_base - count`).
+        let mut rl = engine(Box::<Emacs>::default());
+        let prompt = DefaultPrompt::default();
+        for cmd in ["one", "two", "three"] {
+            let mut keys = text(cmd);
+            keys.push(enter());
+            let _ = drive_signal(&mut rl, &keys);
+            rl.begin_read();
+        }
+        rl.handle_event(
+            &prompt,
+            ReedlineEvent::WithArg {
+                count: 1,
+                explicit: true,
+                event: Box::new(ReedlineEvent::FetchHistory { count: None }),
+            },
+        )
+        .expect("arg fetch ok");
+        assert_eq!(rl.editor.get_buffer(), "three");
+        // Now standing on command 3: `nhist` counts from *this*
+        // position, so 2 back lands on command 1 — GNU counts the arg
+        // against the current position, not the history length.
+        rl.handle_event(
+            &prompt,
+            ReedlineEvent::WithArg {
+                count: 2,
+                explicit: true,
+                event: Box::new(ReedlineEvent::FetchHistory { count: None }),
+            },
+        )
+        .expect("arg fetch ok");
+        assert_eq!(rl.editor.get_buffer(), "one");
     }
 }
 
