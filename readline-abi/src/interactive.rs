@@ -5,7 +5,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
 
-use reedline::{Prompt, PromptEditMode, PromptHistorySearch, Reedline, Signal};
+use ruline::{Prompt, PromptEditMode, PromptHistorySearch, Reedline, Signal};
 
 use crate::completion;
 use crate::line;

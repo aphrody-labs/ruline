@@ -7,7 +7,7 @@
 // Up/Down or Ctrl p/n, to select next/previous match
 
 use nu_ansi_term::{Color, Style};
-use reedline::{DefaultHinter, DefaultPrompt, Reedline, Signal};
+use ruline::{DefaultHinter, DefaultPrompt, Reedline, Signal};
 use std::io;
 
 fn main() -> io::Result<()> {

@@ -3,7 +3,7 @@
 //
 // You can browse the local (non persistent) history using Up/Down or Ctrl n/p.
 
-use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
+use ruline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use std::io;
 
 fn main() -> io::Result<()> {

@@ -56,7 +56,7 @@ pub enum ParseAction {
 ///
 /// ## Example usage
 /// ```
-/// use reedline::menu_functions::{parse_selection_char, ParseAction, ParseResult};
+/// use ruline::menu_functions::{parse_selection_char, ParseAction, ParseResult};
 ///
 /// let parsed = parse_selection_char("this is an example!10", '!');
 ///

@@ -41,7 +41,7 @@
 //
 // Abort with Ctrl-C or Ctrl-D.
 
-use reedline::{DefaultPrompt, PasteBurstHook, Reedline, Signal};
+use ruline::{DefaultPrompt, PasteBurstHook, Reedline, Signal};
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

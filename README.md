@@ -86,9 +86,9 @@ are clean-room.
 See [`ACKNOWLEDGMENTS.md`](./ACKNOWLEDGMENTS.md) and
 [`UPSTREAM.md`](./UPSTREAM.md) for the full attribution.
 
-The Rust package is still named `reedline` during the ABI transition so
-existing source keeps compiling; the product is **ruline**. The crate rename
-is tracked in [#9](https://github.com/unixwin/ruline/issues/9).
+The Rust package and import name are `ruline`; the transition-period
+`reedline` package name was retired by the rename tracked in
+[#9](https://github.com/unixwin/ruline/issues/9). The product is **ruline**.
 
 ## Contributing
 

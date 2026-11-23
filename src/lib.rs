@@ -13,7 +13,7 @@
 //! ```rust,no_run
 //! // Create a default reedline object to handle user input
 //!
-//! use reedline::{DefaultPrompt, Reedline, Signal};
+//! use ruline::{DefaultPrompt, Reedline, Signal};
 //!
 //! let mut line_editor = Reedline::create();
 //! let prompt = DefaultPrompt::default();
@@ -45,7 +45,7 @@
 //!
 //! use {
 //!   crossterm::event::{KeyCode, KeyModifiers},
-//!   reedline::{default_emacs_keybindings, EditCommand, Reedline, Emacs, ReedlineEvent},
+//!   ruline::{default_emacs_keybindings, EditCommand, Reedline, Emacs, ReedlineEvent},
 //! };
 //!
 //! let mut keybindings = default_emacs_keybindings();
@@ -64,7 +64,7 @@
 //! ```rust,no_run
 //! // Create a reedline object with history support, including history size limits
 //!
-//! use reedline::{FileBackedHistory, Reedline};
+//! use ruline::{FileBackedHistory, Reedline};
 //!
 //! let history = Box::new(
 //!     FileBackedHistory::with_file(5, "history.txt".into())
@@ -79,7 +79,7 @@
 //! ```rust
 //! // Create a reedline object with highlighter support
 //!
-//! use reedline::{ExampleHighlighter, Reedline};
+//! use ruline::{ExampleHighlighter, Reedline};
 //!
 //! let commands = vec![
 //!   "test".into(),
@@ -96,7 +96,7 @@
 //! ```rust
 //! // Create a reedline object with tab completions support
 //!
-//! use reedline::{default_emacs_keybindings, ColumnarMenu, DefaultCompleter, Emacs, KeyCode, KeyModifiers, Reedline, ReedlineEvent, ReedlineMenu, MenuBuilder};
+//! use ruline::{default_emacs_keybindings, ColumnarMenu, DefaultCompleter, Emacs, KeyCode, KeyModifiers, Reedline, ReedlineEvent, ReedlineMenu, MenuBuilder};
 //!
 //! let commands = vec![
 //!   "test".into(),
@@ -137,7 +137,7 @@
 //!
 //! use {
 //!   nu_ansi_term::{Color, Style},
-//!   reedline::{DefaultHinter, Reedline},
+//!   ruline::{DefaultHinter, Reedline},
 //! };
 //!
 //!
@@ -153,7 +153,7 @@
 //! ```rust
 //! // Create a reedline object with line completion validation support
 //!
-//! use reedline::{DefaultValidator, Reedline};
+//! use ruline::{DefaultValidator, Reedline};
 //!
 //! let validator = Box::new(DefaultValidator);
 //!
@@ -165,7 +165,7 @@
 //! ```rust
 //! // Create a reedline object with custom edit mode
 //! // This can define a keybinding setting or enable vi-emulation
-//! use reedline::{
+//! use ruline::{
 //!     default_vi_insert_keybindings, default_vi_normal_keybindings,
 //!     default_vi_visual_keybindings, EditMode, Reedline, Vi,
 //! };
@@ -183,7 +183,7 @@
 //! `with_edit_mode` starts active, and a `SwitchMode` event activates another.
 //!
 //! ```rust
-//! use reedline::{
+//! use ruline::{
 //!     default_emacs_keybindings, Emacs, Helix, KeyCode, KeyModifiers, PromptEditMode,
 //!     PromptHelixMode, Reedline, ReedlineEvent,
 //! };
@@ -203,7 +203,7 @@
 //! ## Enable mouse click-to-cursor
 //!
 //! ```rust,no_run
-//! use reedline::{MouseClickMode, Reedline};
+//! use ruline::{MouseClickMode, Reedline};
 //!
 //! let mut line_editor =
 //!     Reedline::create().with_mouse_click(MouseClickMode::EnabledWithOsc133);
@@ -214,7 +214,7 @@
 //! Selection-first editing: motions carry the selection, verbs act on it.
 //!
 //! ```rust
-//! use reedline::{default_helix_normal_keybindings, Helix, Reedline};
+//! use ruline::{default_helix_normal_keybindings, Helix, Reedline};
 //!
 //! let mut normal_keybindings = default_helix_normal_keybindings();
 //! // normal_keybindings.add_binding(..);

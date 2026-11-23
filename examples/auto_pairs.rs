@@ -2,7 +2,7 @@
 // `Highlighter` that demonstrates an auto-pair veto.
 // cargo run --example auto_pairs
 
-use reedline::{
+use ruline::{
     AutoPairAction, AutoPairContext, AutoPairs, DefaultPrompt, Highlighter, Reedline, Signal,
     StyledText,
 };

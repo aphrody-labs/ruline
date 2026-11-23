@@ -6,7 +6,7 @@ use {
         event::{KeyCode, KeyModifiers},
     },
     nu_ansi_term::{Color, Style},
-    reedline::{
+    ruline::{
         default_emacs_keybindings, default_vi_insert_keybindings, default_vi_normal_keybindings,
         default_vi_visual_keybindings, ColumnarMenu, DefaultCompleter, DefaultHinter,
         DefaultPrompt, DefaultValidator, EditCommand, EditMode, Emacs, ExampleHighlighter,
@@ -14,15 +14,15 @@ use {
     },
 };
 
-use reedline::FileBackedHistory;
-use reedline::{
+use ruline::FileBackedHistory;
+use ruline::{
     default_helix_insert_keybindings, default_helix_normal_keybindings,
     default_helix_select_keybindings, DefaultPromptSegment, Helix,
 };
-use reedline::{CursorConfig, MenuBuilder, OutputMode};
-use reedline::{PromptEditMode, PromptHelixMode, PromptViMode};
+use ruline::{CursorConfig, MenuBuilder, OutputMode};
+use ruline::{PromptEditMode, PromptHelixMode, PromptViMode};
 
-fn main() -> reedline::Result<()> {
+fn main() -> ruline::Result<()> {
     println!("Ctrl-D to quit");
     println!("F5 / F6 / F7 switch to emacs / vi normal / helix normal");
     // quick command like parameter handling

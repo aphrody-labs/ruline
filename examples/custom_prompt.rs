@@ -3,7 +3,7 @@
 //
 // Pressing keys will increase the right prompt value
 
-use reedline::{
+use ruline::{
     Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, Reedline, Signal,
     DEFAULT_MULTILINE_INDICATOR,
 };
