@@ -2,7 +2,7 @@
 // cargo run --example helix --features helix
 use crossterm::cursor::SetCursorStyle;
 use nu_ansi_term::Style;
-use reedline::{CursorConfig, DefaultPrompt, Helix, Reedline, Signal};
+use ruline::{CursorConfig, DefaultPrompt, Helix, Reedline, Signal};
 use std::io;
 
 fn main() -> io::Result<()> {

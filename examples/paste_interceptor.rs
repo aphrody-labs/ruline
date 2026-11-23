@@ -30,7 +30,7 @@
 //
 // Abort with Ctrl-C or Ctrl-D.
 
-use reedline::{
+use ruline::{
     default_emacs_keybindings, DefaultPrompt, EditCommand, Emacs, KeyCode, KeyModifiers,
     Keybindings, PasteAction, PasteInterceptor, Reedline, ReedlineEvent, Signal,
 };

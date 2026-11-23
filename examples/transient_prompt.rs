@@ -4,7 +4,7 @@
 // Prompts for previous lines will be replaced with a shorter prompt
 
 use nu_ansi_term::{Color, Style};
-use reedline::{
+use ruline::{
     default_emacs_keybindings, ColumnarMenu, DefaultCompleter, DefaultHinter, DefaultPrompt, Emacs,
     ExampleHighlighter, KeyCode, KeyModifiers, Keybindings, MenuBuilder, Prompt, PromptEditMode,
     PromptHistorySearch, PromptHistorySearchStatus, Reedline, ReedlineEvent, ReedlineMenu, Signal,

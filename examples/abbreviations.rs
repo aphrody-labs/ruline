@@ -3,7 +3,7 @@
 //
 // You can browse the local (non persistent) history using Up/Down or Ctrl n/p.
 
-use reedline::{DefaultPrompt, Reedline, Signal};
+use ruline::{DefaultPrompt, Reedline, Signal};
 use std::{collections::HashMap, io};
 
 fn main() -> io::Result<()> {

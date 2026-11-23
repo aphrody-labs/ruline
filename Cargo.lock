@@ -639,7 +639,7 @@ name = "readline-abi"
 version = "0.1.0"
 dependencies = [
  "libc",
- "reedline",
+ "ruline",
 ]
 
 [[package]]
@@ -649,30 +649,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
  "bitflags 2.13.1",
-]
-
-[[package]]
-name = "reedline"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "crossterm",
- "crossterm_winapi",
- "fd-lock",
- "gethostname",
- "jiff",
- "nu-ansi-term",
- "pretty_assertions",
- "rstest",
- "rustix",
- "serde",
- "serde_json",
- "strip-ansi-escapes",
- "strum",
- "tempfile",
- "unicode-segmentation",
- "unicode-width",
- "vt100",
 ]
 
 [[package]]
@@ -734,6 +710,30 @@ dependencies = [
  "rustc_version",
  "syn 2.0.119",
  "unicode-ident",
+]
+
+[[package]]
+name = "ruline"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "crossterm",
+ "crossterm_winapi",
+ "fd-lock",
+ "gethostname",
+ "jiff",
+ "nu-ansi-term",
+ "pretty_assertions",
+ "rstest",
+ "rustix",
+ "serde",
+ "serde_json",
+ "strip-ansi-escapes",
+ "strum",
+ "tempfile",
+ "unicode-segmentation",
+ "unicode-width",
+ "vt100",
 ]
 
 [[package]]

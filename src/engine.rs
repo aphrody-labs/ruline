@@ -237,7 +237,7 @@ struct NonIncrementalSearchState {
 ///
 /// ## Example usage
 /// ```no_run
-/// use reedline::{Reedline, Signal, DefaultPrompt};
+/// use ruline::{Reedline, Signal, DefaultPrompt};
 /// let mut line_editor = Reedline::create();
 /// let prompt = DefaultPrompt::default();
 ///
@@ -1264,7 +1264,7 @@ impl Reedline {
     /// //nu-ansi-term = "*"
     /// use {
     ///     nu_ansi_term::{Color, Style},
-    ///     reedline::{DefaultHinter, Reedline},
+    ///     ruline::{DefaultHinter, Reedline},
     /// };
     ///
     /// let mut line_editor = Reedline::create().with_hinter(Box::new(
@@ -1290,7 +1290,7 @@ impl Reedline {
     /// ```rust
     /// // Create a reedline object with tab completions support
     ///
-    /// use reedline::{DefaultCompleter, Reedline};
+    /// use ruline::{DefaultCompleter, Reedline};
     ///
     /// let commands = vec![
     ///   "test".into(),
@@ -1470,7 +1470,7 @@ impl Reedline {
     /// ```rust
     /// // Create a reedline object with highlighter support
     ///
-    /// use reedline::{ExampleHighlighter, Reedline};
+    /// use ruline::{ExampleHighlighter, Reedline};
     ///
     /// let commands = vec![
     ///   "test".into(),
@@ -1510,7 +1510,7 @@ impl Reedline {
     /// ```rust,no_run
     /// // Create a reedline object with history support, including history size limits
     ///
-    /// use reedline::{FileBackedHistory, Reedline};
+    /// use ruline::{FileBackedHistory, Reedline};
     ///
     /// let history = Box::new(
     /// FileBackedHistory::with_file(5, "history.txt".into())
@@ -1530,7 +1530,7 @@ impl Reedline {
     /// ```rust,no_run
     /// // Create a reedline instance with history that will *not* include commands starting with a space
     ///
-    /// use reedline::{FileBackedHistory, Reedline};
+    /// use ruline::{FileBackedHistory, Reedline};
     ///
     /// let history = Box::new(
     /// FileBackedHistory::with_file(5, "history.txt".into())
@@ -1551,7 +1551,7 @@ impl Reedline {
     /// ```rust
     /// // Create a reedline object with validator support
     ///
-    /// use reedline::{DefaultValidator, Reedline};
+    /// use ruline::{DefaultValidator, Reedline};
     ///
     /// let mut line_editor =
     /// Reedline::create().with_validator(Box::new(DefaultValidator));
@@ -1570,7 +1570,7 @@ impl Reedline {
     /// ```rust,no_run
     /// // Create a reedline object with vim as editor
     ///
-    /// use reedline::Reedline;
+    /// use ruline::Reedline;
     /// use std::env::temp_dir;
     /// use std::process::Command;
     ///
@@ -6166,7 +6166,7 @@ impl Reedline {
     /// # Example
     /// ```no_run
     /// use std::time::Duration;
-    /// use reedline::Reedline;
+    /// use ruline::Reedline;
     ///
     /// let editor = Reedline::create()
     ///     .with_poll_interval(Duration::from_millis(50));
@@ -6188,7 +6188,7 @@ impl Reedline {
     /// # Example
     /// ```no_run
     /// use std::time::Duration;
-    /// use reedline::Reedline;
+    /// use ruline::Reedline;
     ///
     /// let editor = Reedline::create()
     ///     .with_keyseq_timeout(Duration::from_millis(250));
@@ -6210,7 +6210,7 @@ impl Reedline {
     /// # Example
     /// ```no_run
     /// use std::time::Duration;
-    /// use reedline::Reedline;
+    /// use ruline::Reedline;
     ///
     /// let editor = Reedline::create()
     ///     .with_poll_interval(Duration::from_millis(33))

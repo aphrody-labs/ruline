@@ -224,7 +224,7 @@ impl Helix {
     /// [`Keybindings::empty`]: the table is consulted before the state machine
     /// runs, so an empty one silently drops every bound key.
     ///
-    ///     # use reedline::{default_helix_insert_keybindings, Helix};
+    ///     # use ruline::{default_helix_insert_keybindings, Helix};
     ///     let mut bindings = default_helix_insert_keybindings();
     ///     // bindings.add_binding(..);
     ///     let helix = Helix::default().with_insert_keybindings(bindings);

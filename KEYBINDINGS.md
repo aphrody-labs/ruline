@@ -28,7 +28,7 @@ key in both, and in helix also a `Ctrl` or `Alt` chord.
 be both a binding and the start of a longer sequence:
 
 ```rust
-use reedline::{default_emacs_keybindings, Emacs, KeyCode, KeyCombination,
+use ruline::{default_emacs_keybindings, Emacs, KeyCode, KeyCombination,
                KeyModifiers, ReedlineEvent};
 
 let j = KeyCombination { modifier: KeyModifiers::NONE, key_code: KeyCode::Char('j') };

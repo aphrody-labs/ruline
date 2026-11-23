@@ -9,7 +9,7 @@
 // behavior: with quick completions on, the first [Backspace] dismisses the
 // menu; without quick completions, the menu closes once the line is empty.
 
-use reedline::{
+use ruline::{
     default_emacs_keybindings, ColumnarMenu, Completer, CompletionResult, DefaultPrompt, Emacs,
     KeyCode, KeyModifiers, Keybindings, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal,
     Span, Suggestion,

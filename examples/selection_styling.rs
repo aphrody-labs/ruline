@@ -1,6 +1,6 @@
 #[allow(unused_imports)]
 use nu_ansi_term::{Color, Style};
-use reedline::{DefaultPrompt, Reedline, Signal, Vi};
+use ruline::{DefaultPrompt, Reedline, Signal, Vi};
 use std::io;
 
 fn main() -> io::Result<()> {
